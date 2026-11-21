@@ -1,205 +1,223 @@
 #!/usr/bin/env python3
-"""Draw a one-day world-news front page (1024x1024 PNG) from news.json.
+"""Draw the front page for Friday 20 November 2026 from news.json.
 
-Usage: python3 news-image-generator.py <news.json> <out.png>
-Deterministic: no network, no randomness, no timestamps in the PNG.
-Layout is flow-based: every block's height is measured from its wrapped
-lines, so text can never overlap a divider or the next story.
+Reads the six stories (headline, summary, tag, colour) from news.json next
+to this file and paints a newspaper front page, 1024x1024, with Pillow.
+No network, no randomness. Run from anywhere: `python3 generate.py`
+writes entry.png beside this file.
+
+The layout is measured before it is drawn: every text block is wrapped
+first, the heights are summed, and the body type shrinks a point at a
+time until the whole page fits. Drawing then uses the same heights, so
+nothing can overlap or run off the bottom of the page.
 """
+
 import json
-import math
-import sys
+from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 1024, 1024
-PAPER = (251, 248, 241)
-INK = (20, 33, 61)
-RED = (178, 34, 34)
-GREY = (90, 96, 108)
+HERE = Path(__file__).resolve().parent
+PAGE = 1024
+MARGIN = 46
+CONTENT = PAGE - 2 * MARGIN
 
-FONT_B = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-FONT_R = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-FONT_S = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
+PAPER = (253, 251, 245)
+INK = (18, 18, 18)
+GREY = (112, 110, 106)
+FAINT = (205, 200, 188)
+
+SERIF_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
+SANS_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 
-def font(path, size):
+def load(path, size):
     return ImageFont.truetype(path, size)
 
 
-def wrap(draw, text, fnt, max_w):
-    words = text.split()
-    lines, cur = [], ""
-    for w in words:
-        t = (cur + " " + w).strip()
-        if draw.textlength(t, font=fnt) <= max_w:
-            cur = t
+def wrap_text(draw, text, font, width):
+    """Greedy word wrap; returns the lines that fit `width`."""
+    lines = []
+    current = ""
+    for word in text.split():
+        trial = f"{current} {word}".strip()
+        if draw.textlength(trial, font=font) <= width:
+            current = trial
         else:
-            if cur:
-                lines.append(cur)
-            cur = w
-    if cur:
-        lines.append(cur)
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
     return lines
 
 
-def star_points(cx, cy, r_out, r_in, n=10):
-    pts = []
-    for i in range(2 * n):
-        r = r_out if i % 2 == 0 else r_in
-        a = math.pi * i / n - math.pi / 2
-        pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
-    return pts
+def line_height(font, leading):
+    ascent, descent = font.getmetrics()
+    return ascent + descent + leading
 
 
-def icon(d, kind, box, color):
-    color = tuple(color)
-    x0, y0, x1, y1 = box
-    d.rounded_rectangle(box, radius=16, fill=color)
-    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-    w, h = x1 - x0, y1 - y0
-    white = (255, 255, 255)
-    if kind == "burst":
-        d.polygon(star_points(cx, cy, w * 0.36, w * 0.16, 10), fill=white)
-        d.ellipse([cx - 7, cy - 7, cx + 7, cy + 7], fill=color)
-    elif kind == "bridge":
-        d.arc([x0 + w * 0.16, y0 + h * 0.30, x1 - w * 0.16, y0 + h * 0.95],
-              180, 360, fill=white, width=9)
-        d.line([x0 + w * 0.14, y0 + h * 0.68, x1 - w * 0.14, y0 + h * 0.68],
-               fill=white, width=9)
-        for fx in (0.28, 0.5, 0.72):
-            d.line([x0 + w * fx, y0 + h * 0.42, x0 + w * fx, y0 + h * 0.68],
-                   fill=white, width=6)
-    elif kind == "summit":
-        for fx in (0.28, 0.5, 0.72):
-            d.ellipse([x0 + w * fx - 13, y0 + h * 0.28 - 13,
-                       x0 + w * fx + 13, y0 + h * 0.28 + 13], fill=white)
-            d.pieslice([x0 + w * fx - 20, y0 + h * 0.52 - 6,
-                        x0 + w * fx + 20, y0 + h * 0.52 + 34],
-                       180, 360, fill=white)
-    elif kind == "virus":
-        d.ellipse([cx - 20, cy - 20, cx + 20, cy + 20], fill=white)
-        for i in range(8):
-            a = math.pi * i / 4
-            d.line([cx + 24 * math.cos(a), cy + 24 * math.sin(a),
-                    cx + 34 * math.cos(a), cy + 34 * math.sin(a)],
-                   fill=white, width=6)
-    elif kind == "chart":
-        base = y0 + h * 0.78
-        for i, bh in enumerate((0.28, 0.48, 0.68)):
-            bx = x0 + w * (0.22 + i * 0.24)
-            d.rectangle([bx, base - h * bh, bx + w * 0.14, base], fill=white)
-    elif kind == "tent":
-        d.polygon([(cx, y0 + h * 0.24), (x0 + w * 0.18, y0 + h * 0.76),
-                   (x1 - w * 0.18, y0 + h * 0.76)], fill=white)
-        d.polygon([(cx, y0 + h * 0.52), (cx - 12, y0 + h * 0.76),
-                   (cx + 12, y0 + h * 0.76)], fill=color)
-    elif kind == "plane":
-        d.polygon([(x0 + w * 0.20, y0 + h * 0.62), (x0 + w * 0.82, y0 + h * 0.28),
-                   (x0 + w * 0.66, y0 + h * 0.58), (x0 + w * 0.78, y0 + h * 0.72),
-                   (x0 + w * 0.60, y0 + h * 0.66), (x0 + w * 0.38, y0 + h * 0.78)],
-                  fill=white)
-    elif kind == "senate":
-        d.rectangle([x0 + w * 0.20, y0 + h * 0.26, x1 - w * 0.20, y0 + h * 0.36],
-                    fill=white)
-        for fx in (0.28, 0.5, 0.72):
-            d.rectangle([x0 + w * fx - 7, y0 + h * 0.40, x0 + w * fx + 7,
-                         y0 + h * 0.70], fill=white)
-        d.rectangle([x0 + w * 0.16, y0 + h * 0.72, x1 - w * 0.16, y0 + h * 0.80],
-                    fill=white)
+def block_height(lines, font, leading):
+    """Height of a wrapped block: line heights minus the last leading."""
+    if not lines:
+        return 0
+    return len(lines) * line_height(font, leading) - leading
 
 
-def draw(data, out_path):
-    for s in data["stories"]:
-        s["color"] = tuple(s["color"])
-    img = Image.new("RGB", (W, H), PAPER)
-    d = ImageDraw.Draw(img)
-    mx = 34
-    y = 26
+def draw_lines(draw, lines, font, x, y, fill, leading):
+    """Draw wrapped lines left-aligned; return y advanced by the block."""
+    for line in lines:
+        draw.text((x, y), line, font=font, fill=fill)
+        y += line_height(font, leading)
+    return y - leading if lines else y
 
-    # ---- masthead ----
-    d.text((mx, y), data["kicker"], font=font(FONT_B, 20), fill=RED)
-    y += 28
-    d.text((mx, y), data["title"], font=font(FONT_S, 54), fill=INK)
-    y += 66
-    d.text((mx, y), data["date_line"], font=font(FONT_B, 32), fill=RED)
-    y += 46
-    d.rectangle([mx, y, W - mx, y + 5], fill=INK)
-    y += 11
-    d.rectangle([mx, y, W - mx, y + 2], fill=INK)
-    y += 16
 
-    stories = data["stories"]
-    lead, rest = stories[0], stories[1:]
+def draw_centered(draw, lines, font, y, fill, leading):
+    """Draw wrapped lines centred; return y advanced by the block."""
+    for line in lines:
+        w = draw.textlength(line, font=font)
+        draw.text(((PAGE - w) / 2, y), line, font=font, fill=fill)
+        y += line_height(font, leading)
+    return y - leading if lines else y
 
-    # ---- lead story (flow-measured) ----
-    tx = mx + 172
-    tw = W - mx - tx
-    f_tag, f_lh, f_ls = font(FONT_B, 20), font(FONT_B, 40), font(FONT_R, 23)
-    hl = wrap(d, lead["headline"], f_lh, tw)[:2]
-    sl = wrap(d, lead["summary"], f_ls, tw)[:2]
-    content_h = 26 + len(hl) * 46 + len(sl) * 29
-    block_h = max(148, content_h)
-    iy = y + (block_h - 148) // 2
-    icon(d, lead["icon"], (mx, iy, mx + 148, iy + 148), lead["color"])
-    cy = y
-    d.text((tx, cy), lead["tag"], font=f_tag, fill=lead["color"])
-    cy += 26
-    for line in hl:
-        d.text((tx, cy), line, font=f_lh, fill=INK)
-        cy += 46
-    for line in sl:
-        d.text((tx, cy), line, font=f_ls, fill=(40, 48, 66))
-        cy += 29
-    y += block_h + 10
-    d.line([mx, y, W - mx, y], fill=(200, 196, 186), width=2)
-    y += 10
 
-    # ---- remaining stories (flow-measured) ----
-    f_tag2, f_h, f_s = font(FONT_B, 19), font(FONT_B, 30), font(FONT_R, 22)
-    for i, s in enumerate(rest):
-        tx = mx + 102
-        tw = W - mx - tx
-        hl = wrap(d, s["headline"], f_h, tw)[:2]
-        max_sum = 2 if len(hl) == 1 else 1
-        sl = wrap(d, s["summary"], f_s, tw)[:max_sum]
-        content_h = 25 + len(hl) * 35 + len(sl) * 27
-        block_h = max(84, content_h)
-        iy = y + (block_h - 84) // 2
-        icon(d, s["icon"], (mx, iy, mx + 84, iy + 84), s["color"])
-        cy = y
-        d.text((tx, cy), s["tag"], font=f_tag2, fill=s["color"])
-        cy += 25
-        for line in hl:
-            d.text((tx, cy), line, font=f_h, fill=INK)
-            cy += 35
-        for line in sl:
-            d.text((tx, cy), line, font=f_s, fill=(40, 48, 66))
-            cy += 27
-        y += block_h
-        if i < len(rest) - 1:
-            y += 4
-            d.line([mx, y, W - mx, y], fill=(214, 210, 200), width=1)
-            y += 6
+def measure(draw, data, sizes):
+    """Wrap every text block at `sizes`; return (total height, wrapped)."""
+    kicker_f = load(SANS_BOLD, sizes["kicker"])
+    mast_f = load(SERIF_BOLD, sizes["masthead"])
+    date_f = load(SANS_BOLD, sizes["date"])
+    lead_head_f = load(SERIF_BOLD, sizes["lead_head"])
+    lead_sum_f = load(SANS, sizes["lead_sum"])
+    head_f = load(SANS_BOLD, sizes["head"])
+    sum_f = load(SANS, sizes["summary"])
+    tag_f = load(SANS_BOLD, sizes["tag"])
+    foot_f = load(SANS, sizes["footer"])
 
-    # ---- footer (shrunk to fit if needed) ----
-    f_f = font(FONT_R, 18)
-    while d.textlength(data["footer"], font=f_f) > W - 2 * mx and f_f.size > 12:
-        f_f = font(FONT_R, f_f.size - 1)
-    d.text((mx, H - 30), data["footer"], font=f_f, fill=GREY)
-    print("content ends at y=%d (canvas %d)" % (y, H))
-    assert y <= H - 40, "layout overflow: content ends at %d" % y
+    wrapped = {}
+    wrapped["kicker"] = wrap_text(draw, data["kicker"], kicker_f, CONTENT)
+    wrapped["masthead"] = wrap_text(draw, data["title"], mast_f, CONTENT)
+    wrapped["date"] = wrap_text(draw, data["date_line"], date_f, CONTENT)
 
-    img.save(out_path, "PNG", optimize=True)
-    return out_path
+    lead = data["stories"][0]
+    lead_w = CONTENT - 22
+    wrapped["lead_tag"] = [lead["tag"]]
+    wrapped["lead_head"] = wrap_text(draw, lead["headline"], lead_head_f, lead_w)[:2]
+    wrapped["lead_sum"] = wrap_text(draw, lead["summary"], lead_sum_f, lead_w)[:2]
+
+    wrapped["stories"] = []
+    for story in data["stories"][1:]:
+        head = wrap_text(draw, story["headline"], head_f, CONTENT)[:2]
+        # Two summary lines when the headline took one, one when it took two.
+        max_sum = 2 if len(head) == 1 else 1
+        wrapped["stories"].append(
+            {
+                "tag": story["tag"],
+                "head": head,
+                "sum": wrap_text(draw, story["summary"], sum_f, CONTENT)[:max_sum],
+            }
+        )
+    wrapped["footer"] = wrap_text(draw, data["footer"], foot_f, CONTENT)
+
+    total = 0
+    total += 20  # top pad
+    total += block_height(wrapped["kicker"], kicker_f, 4) + 8
+    total += block_height(wrapped["masthead"], mast_f, 4) + 5
+    total += block_height(wrapped["date"], date_f, 4) + 12
+    total += 3 + 5 + 1 + 14  # thick rule, gap, thin rule, gap
+    lead_h = (
+        block_height(wrapped["lead_tag"], tag_f, 2)
+        + 5
+        + block_height(wrapped["lead_head"], lead_head_f, 6)
+        + 6
+        + block_height(wrapped["lead_sum"], lead_sum_f, 5)
+    )
+    total += lead_h + 14
+    total += 1 + 12  # divider + gap
+    for item in wrapped["stories"]:
+        total += block_height([item["tag"]], tag_f, 2) + 4
+        total += block_height(item["head"], head_f, 4) + 4
+        total += block_height(item["sum"], sum_f, 4) + 12
+    total += 1 + 8  # footer divider + gap
+    total += block_height(wrapped["footer"], foot_f, 3) + 20  # bottom pad
+    return total, wrapped, lead_h
 
 
 def main():
-    news_path, out_path = sys.argv[1], sys.argv[2]
-    with open(news_path) as f:
-        data = json.load(f)
-    draw(data, out_path)
-    print("wrote", out_path)
+    data = json.loads((HERE / "news.json").read_text())
+    img = Image.new("RGB", (PAGE, PAGE), PAPER)
+    draw = ImageDraw.Draw(img)
+
+    sizes = {
+        "kicker": 19,
+        "masthead": 60,
+        "date": 25,
+        "lead_head": 40,
+        "lead_sum": 24,
+        "head": 27,
+        "summary": 22,
+        "tag": 20,
+        "footer": 16,
+    }
+    # Shrink the body type until the page fits with room to spare.
+    while True:
+        total, wrapped, lead_h = measure(draw, data, sizes)
+        if total <= 1000 or sizes["summary"] <= 16:
+            break
+        sizes["summary"] -= 1
+        sizes["head"] -= 1
+        sizes["lead_sum"] -= 1
+
+    kicker_f = load(SANS_BOLD, sizes["kicker"])
+    mast_f = load(SERIF_BOLD, sizes["masthead"])
+    date_f = load(SANS_BOLD, sizes["date"])
+    lead_head_f = load(SERIF_BOLD, sizes["lead_head"])
+    lead_sum_f = load(SANS, sizes["lead_sum"])
+    head_f = load(SANS_BOLD, sizes["head"])
+    sum_f = load(SANS, sizes["summary"])
+    tag_f = load(SANS_BOLD, sizes["tag"])
+    foot_f = load(SANS, sizes["footer"])
+
+    y = 20
+    y = draw_centered(draw, wrapped["kicker"], kicker_f, y, GREY, 4)
+    y += 8
+    y = draw_centered(draw, wrapped["masthead"], mast_f, y, INK, 4)
+    y += 5
+    y = draw_centered(draw, wrapped["date"], date_f, y, INK, 4)
+    y += 12
+    draw.rectangle([MARGIN, y, PAGE - MARGIN, y + 3], fill=INK)
+    y += 3 + 5
+    draw.rectangle([MARGIN, y, PAGE - MARGIN, y + 1], fill=INK)
+    y += 1 + 14
+
+    lead = data["stories"][0]
+    lead_top = y
+    draw.rectangle([MARGIN, lead_top, MARGIN + 6, lead_top + lead_h], fill=tuple(lead["color"]))
+    x = MARGIN + 22
+    y = draw_lines(draw, wrapped["lead_tag"], tag_f, x, y, tuple(lead["color"]), 2)
+    y += 5
+    y = draw_lines(draw, wrapped["lead_head"], lead_head_f, x, y, INK, 6)
+    y += 6
+    y = draw_lines(draw, wrapped["lead_sum"], lead_sum_f, x, y, INK, 5)
+    y = lead_top + lead_h + 14
+    draw.rectangle([MARGIN, y, PAGE - MARGIN, y + 1], fill=FAINT)
+    y += 1 + 12
+
+    for story, item in zip(data["stories"][1:], wrapped["stories"]):
+        y = draw_lines(draw, [item["tag"]], tag_f, MARGIN, y, tuple(story["color"]), 2)
+        y += 4
+        y = draw_lines(draw, item["head"], head_f, MARGIN, y, INK, 4)
+        y += 4
+        y = draw_lines(draw, item["sum"], sum_f, MARGIN, y, INK, 4)
+        y += 12
+
+    draw.rectangle([MARGIN, y, PAGE - MARGIN, y + 1], fill=FAINT)
+    y += 1 + 8
+    y = draw_centered(draw, wrapped["footer"], foot_f, y, GREY, 3)
+
+    out = HERE / "entry.png"
+    img.save(out)
+    print(f"wrote {out} ({out.stat().st_size} bytes); measured total={total}, content ends y={y}")
 
 
 if __name__ == "__main__":

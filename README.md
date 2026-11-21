@@ -8,11 +8,12 @@ One image summing up the world's news of Friday, 20 November 2026: Trump, Xi and
 
 ## How it was made
 
-`generate.py` (Python 3 + Pillow, no network) draws `entry.png` (1024×1024) from `news.json` — six stories verified against Reuters, BusinessWorld, Bloomberg, Insurance Journal and COP31 reporting of 20 November 2026, laid out as a newspaper front page: masthead with the date, one lead story, five more across regions and fields. `main.ts` (Node 22, standard library only) copies the image to the output directory; it writes the same bytes on every run.
+`generate.py` (Python 3 + Pillow, no network) paints `entry.png` (1024×1024) from `news.json` — six stories verified against Reuters, BusinessWorld, Bloomberg, Insurance Journal and COP31 reporting of 20 November 2026, laid out as a newspaper front page: a masthead with the date, one lead story, and five more across regions and fields. The layout is measured before it is drawn, so the text can never overflow the page. `main.ts` (Node, standard library only) checks the image is a real 1024×1024 PNG and copies it to the output directory; it writes the same bytes on every run.
 
 ## Run it
 
 ```sh
+python3 generate.py
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
 
